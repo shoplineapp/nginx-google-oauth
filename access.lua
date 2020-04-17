@@ -231,6 +231,8 @@ local function authorize()
 
   on_auth(email, user_token, expires)
 
+  ngx.log(ngx.NOTICE, "login: " .. email)
+
   ngx.header["Set-Cookie"] = {
     "OauthEmail="       .. ngx.escape_uri(email) .. cookie_tail,
     "OauthAccessToken=" .. ngx.escape_uri(user_token) .. cookie_tail,

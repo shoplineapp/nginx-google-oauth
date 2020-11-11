@@ -1,5 +1,6 @@
 -- Copyright 2015-2020 Cloudflare
 -- Copyright 2014-2015 Aaron Westendorf
+-- Shopline inc. modified at 2020/11/11 for crossing subdomain used
 
 local json = require("cjson")
 local http = require("resty.http")
@@ -16,7 +17,9 @@ local cb_scheme         = ngx.var.ngo_callback_scheme or scheme
 local cb_server_name    = ngx.var.ngo_callback_host or ngx.var.server_name
 local cb_uri            = ngx.var.ngo_callback_uri or "/_oauth"
 local cb_url            = cb_scheme .. "://" .. cb_server_name .. cb_uri
-local redirect_url      = cb_scheme .. "://" .. cb_server_name .. ngx.var.request_uri
+-- We need to redirect the request to origin host after oauth
+-- eg: a1.subdomain.domain.com -> oauth -> cb_uri(b1.subdomain.domain.com) -> a1.subdomain.domain.com
+local redirect_url      = cb_scheme .. "://" .. ngx.var.host .. ngx.var.request_uri
 local signout_uri       = ngx.var.ngo_signout_uri or "/_signout"
 local extra_validity    = tonumber(ngx.var.ngo_extra_validity or "0")
 local whitelist         = ngx.var.ngo_whitelist or ""
@@ -25,6 +28,11 @@ local secure_cookies    = ngx.var.ngo_secure_cookies == "true" or false
 local http_only_cookies = ngx.var.ngo_http_only_cookies == "true" or false
 local set_user          = ngx.var.ngo_user or false
 local email_as_user     = ngx.var.ngo_email_as_user == "true" or false
+-- The cookie should support a changeable domain to set with
+-- Therefore, after we verifiy the oauth with "b1.subdomain.domain.com", the cookie is set with ".subdomain.domain.com" and can be shared with "*.subdomain.domain.com" 
+local cookie_domain     = ngx.var.ngo_cookie_domain or ""
+-- The path for the token and _oauth api
+local verify_path       = ngx.var.ngo_verify_path or ""
 
 if whitelist:len() == 0 then
   whitelist = nil
@@ -35,7 +43,8 @@ if blacklist:len() == 0 then
 end
 
 local function handle_token_uris(email, token, expires)
-  if uri == "/_token.json" then
+  -- the get token api is now bind under "{your_verify_path}/_token.json"
+  if uri == verify_path .. "/_token.json" then
     ngx.header["Content-type"] = "application/json"
     ngx.say(json.encode({
       email   = email,
@@ -45,13 +54,13 @@ local function handle_token_uris(email, token, expires)
     ngx.exit(ngx.OK)
   end
 
-  if uri == "/_token.txt" then
+  if uri == verify_path .. "/_token.txt" then
     ngx.header["Content-type"] = "text/plain"
     ngx.say("email: " .. email .. "\n" .. "token: " .. token .. "\n" .. "expires: " .. expires .. "\n")
     ngx.exit(ngx.OK)
   end
 
-  if uri == "/_token.curl" then
+  if uri == verify_path .. "/_token.curl" then
     ngx.header["Content-type"] = "text/plain"
     ngx.say("-H \"OauthEmail: " .. email .. "\" -H \"OauthAccessToken: " .. token .. "\" -H \"OauthExpires: " .. expires .. "\"\n")
     ngx.exit(ngx.OK)
@@ -219,6 +228,10 @@ local function authorize()
 
   local expires      = ngx.time() + token["expires_in"]
   local cookie_tail  = ";version=1;path=/;Max-Age=" .. extra_validity + token["expires_in"]
+  -- cookie_domain is set, we should set the cooklie_tail with "domain" field
+  if cookie_domain ~= "" then
+    cookie_tail  = ";version=1;domain=" .. cookie_domain .. ";path=/;Max-Age=" .. extra_validity + token["expires_in"]
+  end
   if secure_cookies then
     cookie_tail = cookie_tail .. ";secure"
   end
@@ -256,6 +269,7 @@ if not is_authorized() then
 end
 
 -- if already authenticated, but still receives a /_oauth request, redirect to the correct destination
-if uri == "/_oauth" then
+-- The oauth api is now under "{your_verify_path}/_oauth"
+if uri == verify_path .. "/_oauth" then
   return ngx.redirect(uri_args["state"])
 end
